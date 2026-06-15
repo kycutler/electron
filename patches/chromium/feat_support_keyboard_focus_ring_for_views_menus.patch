@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Electron Contributors <electron@github.com>
+Date: Mon, 15 Jun 2026 00:00:00 -0700
+Subject: feat: show keyboard focus ring for Views menus
+
+Draws a focus ring around the selected menu item, but only while the
+selection is being changed with the keyboard (including when a context menu
+is opened via the keyboard and the first item is auto-selected). The ring is
+hidden again as soon as the mouse is used, mirroring focus-visible behavior,
+so it makes keyboard navigation of Views menus (Windows/Linux) more visible
+without affecting mouse-driven interaction.
+
+diff --git a/ui/views/controls/menu/menu_controller.cc b/ui/views/controls/menu/menu_controller.cc
+index ed08281fb8ca7..e406310886a00 100644
+--- a/ui/views/controls/menu/menu_controller.cc
++++ b/ui/views/controls/menu/menu_controller.cc
+@@ -730,8 +730,12 @@ void MenuController::Run(Widget* parent,
+     // For context menus opened via the keyboard we select the first item by default
+     // to match accessibility expectations
+     MenuItemView* first_item = FindInitialSelectableMenuItem(root, INCREMENT_SELECTION_DOWN);
+-    if (first_item)
++    if (first_item) {
+       SetSelection(first_item, SELECTION_UPDATE_IMMEDIATELY);
++      // The menu was opened with the keyboard, so show the keyboard focus ring
++      // on the initially selected item.
++      item_selected_by_keyboard_ = true;
++    }
+   }
+ 
+   if (button_controller) {
+@@ -1066,6 +1070,7 @@ void MenuController::OnMouseMoved(SubmenuView* source,
+   }
+ 
+   menu_open_mouse_loc_.reset();
++  item_selected_by_keyboard_ = false;
+   MenuHostRootView* root_view = GetRootView(source, event.location());
+   Button* new_hot_tracked_button = nullptr;
+   if (root_view) {
+@@ -1463,6 +1468,7 @@ ui::PostDispatchAction MenuController::OnWillDispatchKeyEvent(
+ 
+   base::WeakPtr<MenuController> this_ref = AsWeakPtr();
+   if (event->type() == ui::EventType::kKeyPressed) {
++    item_selected_by_keyboard_ = true;
+     bool key_handled = false;
+ #if BUILDFLAG(IS_MAC)
+     // Special handling for Option-Up and Option-Down, which should behave like
+@@ -1779,6 +1785,8 @@ void MenuController::SetSelectionOnPointerDown(SubmenuView* source,
+     return;
+   }
+ 
++  item_selected_by_keyboard_ = false;
++
+   DCHECK(!active_mouse_view_tracker_->view());
+ 
+   MenuPart part = GetMenuPart(source, event->location());
+diff --git a/ui/views/controls/menu/menu_controller.h b/ui/views/controls/menu/menu_controller.h
+index fd62a4c95aa0d..842a1850e24a1 100644
+--- a/ui/views/controls/menu/menu_controller.h
++++ b/ui/views/controls/menu/menu_controller.h
+@@ -271,6 +271,13 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
+   }
+   bool use_ash_system_ui_layout() const { return use_ash_system_ui_layout_; }
+ 
++  // Whether a focus ring should currently be painted around the selected menu
++  // item. This is true only when the selection was last changed by the
++  // keyboard, so the ring is hidden again as soon as the mouse is used.
++  bool ShouldShowKeyboardFocusRing() const {
++    return item_selected_by_keyboard_;
++  }
++
+   // The rounded corners of the context menu.
+   std::optional<gfx::RoundedCornersF> rounded_corners() const {
+     return rounded_corners_;
+@@ -814,6 +821,11 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
+   // Set to true if the menu item was selected by touch.
+   bool item_selected_by_touch_ = false;
+ 
++  // Set to true while the selection is being changed with the keyboard, and
++  // reset to false as soon as the mouse moves or is pressed. Used to decide
++  // when to paint a focus ring around the selected menu item.
++  bool item_selected_by_keyboard_ = false;
++
+   // Whether to use the ash system UI specific layout.
+   bool use_ash_system_ui_layout_ = false;
+ 
+diff --git a/ui/views/controls/menu/menu_item_view.cc b/ui/views/controls/menu/menu_item_view.cc
+index e22ac23452a50..38479b7debac6 100644
+--- a/ui/views/controls/menu/menu_item_view.cc
++++ b/ui/views/controls/menu/menu_item_view.cc
+@@ -1228,6 +1228,22 @@ void MenuItemView::PaintBackground(gfx::Canvas* canvas,
+         ui::NativeTheme::kMenuItemBackground, ui::NativeTheme::kHovered,
+         item_bounds, ui::NativeTheme::ExtraParams(menu_item_extra_params));
+   }
++
++  // Electron: when the menu is being navigated with the keyboard, draw a focus
++  // ring around the selected item so keyboard focus is clearly visible.
++  if (paint_as_selected && GetMenuController() &&
++      GetMenuController()->ShouldShowKeyboardFocusRing()) {
++    constexpr float kKeyboardFocusRingThickness = 2.0f;
++    gfx::RectF ring_bounds(GetLocalBounds());
++    ring_bounds.Inset(kKeyboardFocusRingThickness / 2);
++    cc::PaintFlags ring_flags;
++    ring_flags.setAntiAlias(true);
++    ring_flags.setStyle(cc::PaintFlags::kStroke_Style);
++    ring_flags.setStrokeWidth(kKeyboardFocusRingThickness);
++    ring_flags.setColor(
++        GetColorProvider()->GetColor(ui::kColorMenuItemForegroundSelected));
++    canvas->DrawRoundRect(ring_bounds, config.item_corner_radius, ring_flags);
++  }
+ }
+ 
+ void MenuItemView::PaintMinorIconAndText(gfx::Canvas* canvas, SkColor color) {
